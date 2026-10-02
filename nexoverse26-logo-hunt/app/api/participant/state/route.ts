@@ -18,7 +18,10 @@ export async function GET() {
       );
     }
 
-    // Get current event
+    // --------------------------------------------------
+    // 1. Get current event
+    // --------------------------------------------------
+
     const { data: event, error: eventError } =
       await supabaseAdmin
         .from("events")
@@ -43,12 +46,39 @@ export async function GET() {
       throw eventError;
     }
 
-    // Get active question
-    let question: any = null;
+    // --------------------------------------------------
+    // 2. No active question
+    // --------------------------------------------------
 
-    if (event.active_question_id) {
-      const { data, error } =
-        await supabaseAdmin
+    if (!event.active_question_id) {
+      return NextResponse.json({
+        success: true,
+
+        game: {
+          status: event.status,
+          roundId: event.active_round_id,
+          questionVisible: event.question_visible,
+          logoVisible: event.logo_visible,
+          buzzerOpen: event.buzzer_open,
+          paused: event.paused,
+          timerStartedAt: event.timer_started_at,
+          timerSeconds: event.timer_seconds,
+          currentPriority: null,
+          canAnswer: false,
+          question: null,
+          myBuzz: null,
+        },
+      });
+    }
+
+    // --------------------------------------------------
+    // 3. Load question + current attempt buzzes
+    //    in parallel
+    // --------------------------------------------------
+
+    const [questionResult, buzzResult] =
+      await Promise.all([
+        supabaseAdmin
           .from("questions")
           .select(`
             id,
@@ -60,35 +90,9 @@ export async function GET() {
             sort_order
           `)
           .eq("id", event.active_question_id)
-          .single();
+          .single(),
 
-      if (error) {
-        throw error;
-      }
-
-      question = data;
-    }
-
-    let myBuzz: any = null;
-    let canAnswer = false;
-    let currentPriority: number | null = null;
-
-    /*
-      Find the current answer turn.
-
-      Example:
-
-      #1 -> wrong
-      #2 -> pending
-
-      Then #2 is the current answerer.
-
-      If #1 -> pending,
-      then #1 remains the current answerer.
-    */
-    if (event.active_question_id) {
-      const { data: buzzes, error: buzzError } =
-        await supabaseAdmin
+        supabaseAdmin
           .from("buzzes")
           .select(`
             id,
@@ -107,20 +111,37 @@ export async function GET() {
           )
           .order("priority", {
             ascending: true,
-          });
+          }),
+      ]);
 
-      if (buzzError) {
-        throw buzzError;
-      }
+    if (questionResult.error) {
+      throw questionResult.error;
+    }
 
-      const { data: answers, error: answerError } =
+    if (buzzResult.error) {
+      throw buzzResult.error;
+    }
+
+    const question = questionResult.data;
+    const buzzes = buzzResult.data || [];
+
+    // --------------------------------------------------
+    // 4. If nobody has buzzed yet,
+    //    DON'T query answers
+    // --------------------------------------------------
+
+    let answers: any[] = [];
+
+    if (buzzes.length > 0) {
+      const { data, error } =
         await supabaseAdmin
           .from("answers")
           .select(`
             id,
             participant_id,
             attempt_number,
-            result
+            result,
+            submitted_at
           `)
           .eq(
             "question_id",
@@ -129,70 +150,97 @@ export async function GET() {
           .eq(
             "attempt_number",
             event.buzzer_attempt
-          );
+          )
+          .order("submitted_at", {
+            ascending: true,
+          });
 
-      if (answerError) {
-        throw answerError;
+      if (error) {
+        throw error;
       }
+
+      answers = data || [];
+    }
+
+    // --------------------------------------------------
+    // 5. Build latest answer lookup
+    // --------------------------------------------------
+
+    const answerMap = new Map<
+      string,
+      any
+    >();
+
+    for (const answer of answers) {
+      const key =
+        `${answer.participant_id}:${answer.attempt_number}`;
+
+      // Answers are ordered ASC,
+      // so latest answer overwrites previous answer.
+      answerMap.set(key, answer);
+    }
+
+    // --------------------------------------------------
+    // 6. Find current answer turn
+    // --------------------------------------------------
+
+    let currentBuzz: any = null;
+
+    for (const buzz of buzzes) {
+      const key =
+        `${buzz.participant_id}:${buzz.attempt_number}`;
+
+      const latestAnswer =
+        answerMap.get(key);
 
       /*
-        Find the first priority participant
-        who has not completed their answer.
+        No answer
+        -> participant gets turn.
 
-        No answer yet      -> current turn
-        pending            -> current turn
-        wrong              -> skip
-        correct             -> skip / question finished
+        Pending
+        -> participant still gets turn.
+
+        Wrong / correct
+        -> move to next priority.
       */
 
-      let currentBuzz: any = null;
-
-      for (const buzz of buzzes || []) {
-        const participantAnswers =
-          (answers || []).filter(
-            (a) =>
-              a.participant_id ===
-                buzz.participant_id &&
-              a.attempt_number ===
-                buzz.attempt_number
-          );
-
-        const latestAnswer =
-          participantAnswers.length > 0
-            ? participantAnswers[
-                participantAnswers.length - 1
-              ]
-            : null;
-
-        if (
-          !latestAnswer ||
-          latestAnswer.result === "pending"
-        ) {
-          currentBuzz = buzz;
-          break;
-        }
-
-        // wrong/correct answers are completed,
-        // so move to the next priority.
-      }
-
-      // Find this participant's buzz
-      myBuzz =
-        (buzzes || []).find(
-          (b) =>
-            b.participant_id ===
-            s.participantId
-        ) || null;
-
-      if (currentBuzz) {
-        currentPriority =
-          currentBuzz.priority;
-
-        canAnswer =
-          currentBuzz.participant_id ===
-          s.participantId;
+      if (
+        !latestAnswer ||
+        latestAnswer.result === "pending"
+      ) {
+        currentBuzz = buzz;
+        break;
       }
     }
+
+    // --------------------------------------------------
+    // 7. Find this participant's buzz
+    // --------------------------------------------------
+
+    const myBuzz =
+      buzzes.find(
+        (buzz) =>
+          buzz.participant_id ===
+          s.participantId
+      ) || null;
+
+    let currentPriority: number | null =
+      null;
+
+    let canAnswer = false;
+
+    if (currentBuzz) {
+      currentPriority =
+        currentBuzz.priority;
+
+      canAnswer =
+        currentBuzz.participant_id ===
+        s.participantId;
+    }
+
+    // --------------------------------------------------
+    // 8. Return game state
+    // --------------------------------------------------
 
     return NextResponse.json({
       success: true,
@@ -226,8 +274,7 @@ export async function GET() {
         canAnswer,
 
         question:
-          event.question_visible &&
-          question
+          event.question_visible
             ? {
                 id: question.id,
 
@@ -265,6 +312,7 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
+
         error:
           e instanceof Error
             ? e.message

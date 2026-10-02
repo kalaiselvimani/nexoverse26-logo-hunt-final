@@ -66,16 +66,16 @@ export default function LiveGame() {
   }
 
   useEffect(() => {
+  load();
+
+  const timer = setInterval(() => {
     load();
+  }, 1500);
 
-    const timer = setInterval(() => {
-      load();
-    }, 1000);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, []);
+  return () => {
+    clearInterval(timer);
+  };
+}, []);
 
   async function act(action: string) {
     try {

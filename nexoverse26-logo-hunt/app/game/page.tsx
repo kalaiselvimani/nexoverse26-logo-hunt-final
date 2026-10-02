@@ -62,16 +62,30 @@ export default function Game() {
   }
 
   useEffect(() => {
-    load();
+  let stopped = false;
+  let loading = false;
 
-    const t = setInterval(
-      load,
-      700
-    );
+  async function poll() {
+    if (stopped || loading) return;
 
-    return () =>
-      clearInterval(t);
-  }, []);
+    loading = true;
+
+    try {
+      await load();
+    } finally {
+      loading = false;
+    }
+  }
+
+  poll();
+
+  const t = setInterval(poll, 1500);
+
+  return () => {
+    stopped = true;
+    clearInterval(t);
+  };
+}, []);
 
   async function buzz() {
     setBusy(true);

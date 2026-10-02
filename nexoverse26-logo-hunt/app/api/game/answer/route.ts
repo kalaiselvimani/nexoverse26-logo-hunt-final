@@ -20,9 +20,7 @@ export async function POST(req: Request) {
 
     const { answer } = await req.json();
 
-    const answerText = String(
-      answer || ""
-    ).trim();
+    const answerText = String(answer || "").trim();
 
     if (!answerText) {
       return NextResponse.json(
@@ -64,12 +62,19 @@ export async function POST(req: Request) {
       );
     }
 
+    const questionId = event.active_question_id;
+    const attemptNumber = event.buzzer_attempt;
+
     /*
-      Get this participant's buzz
-      for the current question/attempt.
+      These queries are independent after the event
+      is loaded, so run them in parallel.
     */
-    const { data: myBuzz, error: buzzError } =
-      await supabaseAdmin
+    const [
+      { data: myBuzz, error: buzzError },
+      { data: answers, error: answersError },
+      { data: buzzes, error: buzzesError },
+    ] = await Promise.all([
+      supabaseAdmin
         .from("buzzes")
         .select(`
           id,
@@ -77,22 +82,44 @@ export async function POST(req: Request) {
           attempt_number,
           priority
         `)
-        .eq(
-          "question_id",
-          event.active_question_id
-        )
-        .eq(
-          "participant_id",
-          s.participantId
-        )
-        .eq(
-          "attempt_number",
-          event.buzzer_attempt
-        )
-        .maybeSingle();
+        .eq("question_id", questionId)
+        .eq("participant_id", s.participantId)
+        .eq("attempt_number", attemptNumber)
+        .maybeSingle(),
+
+      supabaseAdmin
+        .from("answers")
+        .select(`
+          participant_id,
+          result
+        `)
+        .eq("question_id", questionId)
+        .eq("attempt_number", attemptNumber),
+
+      supabaseAdmin
+        .from("buzzes")
+        .select(`
+          participant_id,
+          priority,
+          attempt_number
+        `)
+        .eq("question_id", questionId)
+        .eq("attempt_number", attemptNumber)
+        .order("priority", {
+          ascending: true,
+        }),
+    ]);
 
     if (buzzError) {
       throw buzzError;
+    }
+
+    if (answersError) {
+      throw answersError;
+    }
+
+    if (buzzesError) {
+      throw buzzesError;
     }
 
     if (!myBuzz) {
@@ -106,76 +133,44 @@ export async function POST(req: Request) {
     }
 
     /*
-      Find all answers already submitted
-      for this question/attempt.
+      Check whether this participant already submitted
+      an answer.
+
+      This replaces the old extra database query.
     */
-    const { data: answers, error: answersError } =
-      await supabaseAdmin
-        .from("answers")
-        .select(`
-          participant_id,
-          result
-        `)
-        .eq(
-          "question_id",
-          event.active_question_id
-        )
-        .eq(
-          "attempt_number",
-          event.buzzer_attempt
-        );
+    const existingAnswer = (answers || []).find(
+      (a) =>
+        a.participant_id === s.participantId
+    );
 
-    if (answersError) {
-      throw answersError;
-    }
-
-    /*
-      Find all buzzes in priority order.
-    */
-    const { data: buzzes, error: buzzesError } =
-      await supabaseAdmin
-        .from("buzzes")
-        .select(`
-          participant_id,
-          priority,
-          attempt_number
-        `)
-        .eq(
-          "question_id",
-          event.active_question_id
-        )
-        .eq(
-          "attempt_number",
-          event.buzzer_attempt
-        )
-        .order("priority", {
-          ascending: true,
-        });
-
-    if (buzzesError) {
-      throw buzzesError;
+    if (existingAnswer) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Answer already submitted.",
+        },
+        { status: 409 }
+      );
     }
 
     /*
       Determine whose turn it is.
 
-      The first participant whose answer
-      is missing or pending is the current turn.
+      The first participant whose answer is missing
+      or still pending gets the current turn.
     */
-    let currentParticipantId: string | null =
-      null;
+    let currentParticipantId: string | null = null;
 
     for (const buzz of buzzes || []) {
-      const existingAnswer =
-        (answers || []).find(
-          (a) =>
-            a.participant_id ===
-            buzz.participant_id
-        );
+      const participantAnswer = (answers || []).find(
+        (a) =>
+          a.participant_id ===
+          buzz.participant_id
+      );
 
       if (
-        !existingAnswer ||
-        existingAnswer.result === "pending"
+        !participantAnswer ||
+        participantAnswer.result === "pending"
       ) {
         currentParticipantId =
           buzz.participant_id;
@@ -199,42 +194,6 @@ export async function POST(req: Request) {
     }
 
     /*
-      Prevent duplicate submission.
-    */
-    const { data: existingAnswer, error: existingError } =
-      await supabaseAdmin
-        .from("answers")
-        .select("id,result")
-        .eq(
-          "question_id",
-          event.active_question_id
-        )
-        .eq(
-          "participant_id",
-          s.participantId
-        )
-        .eq(
-          "attempt_number",
-          event.buzzer_attempt
-        )
-        .maybeSingle();
-
-    if (existingError) {
-      throw existingError;
-    }
-
-    if (existingAnswer) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Answer already submitted.",
-        },
-        { status: 409 }
-      );
-    }
-
-    /*
       Insert pending answer.
       Organiser will judge it.
     */
@@ -242,17 +201,10 @@ export async function POST(req: Request) {
       await supabaseAdmin
         .from("answers")
         .insert({
-          question_id:
-            event.active_question_id,
-
-          participant_id:
-            s.participantId,
-
-          attempt_number:
-            event.buzzer_attempt,
-
+          question_id: questionId,
+          participant_id: s.participantId,
+          attempt_number: attemptNumber,
           answer_text: answerText,
-
           result: "pending",
         });
 
@@ -265,10 +217,7 @@ export async function POST(req: Request) {
       message: "Answer submitted successfully.",
     });
   } catch (e) {
-    console.error(
-      "ANSWER ERROR",
-      e
-    );
+    console.error("ANSWER ERROR", e);
 
     return NextResponse.json(
       {
