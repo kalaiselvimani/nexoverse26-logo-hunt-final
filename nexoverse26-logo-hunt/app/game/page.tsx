@@ -88,40 +88,46 @@ export default function Game() {
 }, []);
 
   async function buzz() {
-    setBusy(true);
-    setError("");
+  setBusy(true);
+  setError("");
 
-    try {
-      const r = await fetch(
-        "/api/game/buzz",
-        {
-          method: "POST",
-        }
-      );
-
-      const d =
-        await r.json().catch(
-          () => null
-        );
-
-      if (!r.ok) {
-        setError(
-          d?.reason ||
-            d?.error ||
-            "Buzz failed"
-        );
+  try {
+    const r = await fetch(
+      "/api/game/buzz",
+      {
+        method: "POST",
       }
-    } catch {
-      setError(
-        "Unable to connect to game server."
+    );
+
+    const d =
+      await r.json().catch(
+        () => null
       );
+
+    if (!r.ok) {
+      setError(
+        d?.reason ||
+          d?.error ||
+          "Buzz failed"
+      );
+
+      setBusy(false);
+      return;
     }
 
-    setBusy(false);
-
+    // First accepted buzz already gets
+    // its priority in the database.
+    // Wait for fresh game state before
+    // showing BUZZ NOW again.
     await load();
+  } catch {
+    setError(
+      "Unable to connect to game server."
+    );
   }
 
+  setBusy(false);
+}
   async function submit() {
     if (!answer.trim()) {
       return;
