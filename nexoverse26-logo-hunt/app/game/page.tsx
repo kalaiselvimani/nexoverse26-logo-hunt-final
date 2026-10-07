@@ -209,38 +209,22 @@ export default function Game() {
         }}
       >
         <div className="tag">
-          LIVE QUESTION
-        </div>
+  LOGO HUNT
+</div>
 
-        {g.questionVisible &&
-        g.question ? (
-          <>
-            <div
-              className="question"
-              style={{
-                margin: "20px 0",
-              }}
-            >
-              {g.question.text}
-            </div>
-
-            {g.logoVisible &&
-              g.question.logoUrl && (
-                <img
-                  className="logo"
-                  src={
-                    g.question.logoUrl
-                  }
-                  alt="Question logo"
-                />
-              )}
-          </>
-        ) : (
-          <div className="status">
-            Waiting for organiser
-            to reveal the question...
-          </div>
-        )}
+{g.logoVisible &&
+g.question?.logoUrl ? (
+  <img
+    className="logo"
+    src={g.question.logoUrl}
+    alt="Brand logo"
+  />
+) : (
+  <div className="status">
+    Waiting for organiser
+    to reveal the logo...
+  </div>
+)}
 
         {/* BUZZ BUTTON */}
 

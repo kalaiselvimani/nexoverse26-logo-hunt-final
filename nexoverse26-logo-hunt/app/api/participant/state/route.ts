@@ -273,24 +273,21 @@ export async function GET() {
 
         canAnswer,
 
-        question:
-          event.question_visible
-            ? {
-                id: question.id,
+        question: {
+  id: question.id,
 
-                text:
-                  question.question_text,
+  // Question text must NEVER be sent to participants
+  text: null,
 
-                logoUrl:
-                  event.logo_visible
-                    ? question.logo_url
-                    : null,
+  // Logo is sent only after organiser reveals it
+  logoUrl:
+    event.logo_visible
+      ? question.logo_url
+      : null,
 
-                points:
-                  question.points,
-              }
-            : null,
-
+  points:
+    question.points,
+},
         myBuzz:
           myBuzz
             ? {
